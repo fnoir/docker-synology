@@ -1,0 +1,308 @@
+version: "2.4"
+
+networks:
+
+  deemix:
+    external: false
+
+  jackett:
+    external: false
+
+  plex:
+    external: false
+
+  radarr:
+    external: false
+
+  rtorrent:
+    external: false
+
+  socket-proxy:
+    external: false
+
+  sonarr:
+    external: false
+
+  wan:
+    driver: macvlan
+    enable_ipv6: false
+    driver_opts:
+      parent: ${NETWORK_WAN_PARENT}
+    ipam:
+      config:
+        - subnet: ${NETWORK_WAN_SUBNET}
+          gateway: ${NETWORK_WAN_GATEWAY}
+          ip_range: ${NETWORK_WAN_IP_RANGE}
+
+services:
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1
+    networks:
+      - socket-proxy
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  traefik:
+    image: traefik:2.2
+    container_name: traefik
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
+    command:
+      --certificatesresolvers.ovh.acme.dnschallenge.delaybeforecheck=0
+      --certificatesresolvers.ovh.acme.dnschallenge.provider=ovh
+      --certificatesresolvers.ovh.acme.email=${TRAEFIK_ACME_EMAIL}
+      --certificatesresolvers.ovh.acme.keytype=EC384
+      --certificatesresolvers.ovh.acme.storage=/etc/traefik/acme/acme.json
+      --entrypoints.web.address=${TRAEFIK_WAN_IPV4_ADDRESS}:80
+      --entrypoints.web.http.redirections.entrypoint.scheme=https
+      --entrypoints.web.http.redirections.entrypoint.to=websecure
+      --entrypoints.websecure.address=${TRAEFIK_WAN_IPV4_ADDRESS}:443
+      --global.checknewversion=false
+      --global.sendanonymoususage=false
+      --providers.docker.endpoint="tcp://docker-socket-proxy:2375"
+      --providers.docker.exposedbydefault=false
+      --providers.file.filename=/etc/traefik/conf/traefik.yml
+    environment:
+      - OVH_APPLICATION_KEY=${TRAEFIK_OVH_APPLICATION_KEY}
+      - OVH_APPLICATION_SECRET=${TRAEFIK_OVH_APPLICATION_SECRET}
+      - OVH_CONSUMER_KEY=${TRAEFIK_OVH_CONSUMER_KEY}
+      - OVH_ENDPOINT=${TRAEFIK_OVH_ENDPOINT}
+    networks:
+      deemix:
+      jackett:
+      plex:
+      radarr:
+      rtorrent:
+      socket-proxy:
+      sonarr:
+      wan:
+        ipv4_address: ${TRAEFIK_WAN_IPV4_ADDRESS}
+    volumes:
+      - "./appdata/traefik/acme:/etc/traefik/acme"
+      - "./appdata/traefik/conf/traefik.yml:/etc/traefik/conf/traefik.yml:ro"
+
+  deemix:
+    image: registry.gitlab.com/bockiii/deemix-docker:latest
+    container_name: deemix
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=deemix"
+      - "traefik.http.routers.to-deemix.rule=Host(`deemix.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-deemix.entrypoints=websecure"
+      - "traefik.http.routers.to-deemix.tls=true"
+      - "traefik.http.routers.to-deemix.tls.certresolver=ovh"
+      - "traefik.http.routers.to-deemix.middlewares=securedheaders@file"
+      - "traefik.http.services.deemix.loadbalancer.passhostheader=true"
+      - "traefik.http.services.deemix.loadbalancer.server.port=6595"
+    environment:
+      - ARL=${DEEMIX_ARL}
+      - PUID=${UID_MEDIA}
+      - PGID=${GID_MEDIA}
+    networks:
+      - deemix
+    volumes:
+      - "./appdata/deemix:/config"
+      - "${VOLUME_MEDIA_MUSIC}:/downloads"
+
+  jackett:
+    image: linuxserver/jackett:latest
+    container_name: jackett
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=jackett"
+      - "traefik.http.routers.to-jackett.rule=Host(`jackett.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-jackett.entrypoints=websecure"
+      - "traefik.http.routers.to-jackett.tls=true"
+      - "traefik.http.routers.to-jackett.tls.certresolver=ovh"
+      - "traefik.http.routers.to-jackett.middlewares=securedheaders@file"
+      - "traefik.http.services.jackett.loadbalancer.passhostheader=true"
+      - "traefik.http.services.jackett.loadbalancer.server.port=9117"
+    environment:
+      - AUTO_UPDATE=true
+      - PGID=${GID_MEDIA}
+      - PUID=${UID_MEDIA}
+      - TZ=${TIMEZONE}
+    networks:
+      - jackett
+    volumes:
+      - "./appdata/jackett:/config"
+
+  plex:
+    image: plexinc/pms-docker:latest
+    container_name: plex
+    restart: unless-stopped
+    hostname: plex.${DOMAIN_NAME}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=plex"
+      - "traefik.http.routers.to-plex.rule=Host(`plex.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-plex.entrypoints=websecure"
+      - "traefik.http.routers.to-plex.tls=true"
+      - "traefik.http.routers.to-plex.tls.certresolver=ovh"
+      - "traefik.http.routers.to-plex.middlewares=securedheaders@file"
+      - "traefik.http.services.plex.loadbalancer.passhostheader=true"
+      - "traefik.http.services.plex.loadbalancer.server.port=32400"
+    environment:
+      - ADVERTISE_IP=https://plex.${DOMAIN_NAME}:443/
+      - ALLOWED_NETWORKS=${PLEX_ALLOWED_NETWORKS}
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - PLEX_GID=${GID_MEDIA}
+      - PLEX_UID=${UID_MEDIA}
+      - TZ=${TIMEZONE}
+    networks:
+      - plex
+    ports:
+      - 32400:32400/tcp
+    volumes:
+      - "./appdata/plex:/config"
+      - "${VOLUME_MEDIA_MOVIES}:/data/movies"
+      - "${VOLUME_MEDIA_TV_SHOWS}:/data/tv"
+      - "${VOLUME_MEDIA_MUSIC}:/data/music"
+
+  radarr:
+    image: linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - rtorrent
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=radarr"
+      - "traefik.http.routers.to-radarr.rule=Host(`radarr.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-radarr.entrypoints=websecure"
+      - "traefik.http.routers.to-radarr.tls=true"
+      - "traefik.http.routers.to-radarr.tls.certresolver=ovh"
+      - "traefik.http.routers.to-radarr.middlewares=securedheaders@file"
+      - "traefik.http.services.radarr.loadbalancer.passhostheader=true"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+    environment:
+      - PGID=${GID_MEDIA}
+      - PUID=${UID_MEDIA}
+      - TZ=${TIMEZONE}
+    networks:
+      - radarr
+    volumes:
+      - "./appdata/radarr:/config"
+      - "${VOLUME_MEDIA_MOVIES}:/movies"
+
+  rtorrent:
+    image: binhex/arch-rtorrentvpn:latest
+    container_name: rtorrent
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=rtorrent"
+      - "traefik.http.routers.to-rtorrent.rule=Host(`rtorrent.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-rtorrent.entrypoints=websecure"
+      - "traefik.http.routers.to-rtorrent.tls=true"
+      - "traefik.http.routers.to-rtorrent.tls.certresolver=ovh"
+      - "traefik.http.routers.to-rtorrent.middlewares=securedheaders@file"
+      - "traefik.http.services.rtorrent.loadbalancer.passhostheader=true"
+      - "traefik.http.services.rtorrent.loadbalancer.server.port=9080"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    environment:
+      - DEBUG=false
+      - ENABLE_PRIVOXY=no
+      - ENABLE_AUTODL_IRSSI=no
+      - ENABLE_RPC2=yes
+      - ENABLE_RPC2_AUTH=yes
+      - ENABLE_WEBUI_AUTH=no
+      - LAN_NETWORK=${RTORRENT_LAN_NETWORK}
+      - NAME_SERVERS=80.67.169.12,80.67.169.40,1.1.1.1,1.0.0.1
+      - PGID=${GID_MEDIA}
+      - PHP_TZ=${TIMEZONE}
+      - PUID=${UID_MEDIA}
+      - RPC2_USER=${RTORRENT_RPC2_USERNAME}
+      - RPC2_PASS=${RTORRENT_RPC2_PASSWORD}
+      - STRICT_PORT_FORWARD=yes
+      - UMASK=000
+      - VPN_ENABLED=yes
+      - VPN_USER=${RTORRENT_OPENVPN_USERNAME}
+      - VPN_PASS=${RTORRENT_OPENVPN_PASSWORD}
+      - VPN_PROV=custom
+    networks:
+      - rtorrent
+    volumes:
+      - "./appdata/rtorrent/config:/config"
+      - "./appdata/rtorrent/data:/data"
+      - "${VOLUME_MEDIA_MOVIES}:/share"
+      - "/etc/localtime:/etc/localtime:ro"
+
+  sonarr:
+    image: linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - rtorrent
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=sonarr"
+      - "traefik.http.routers.to-sonarr.rule=Host(`sonarr.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-sonarr.entrypoints=websecure"
+      - "traefik.http.routers.to-sonarr.tls=true"
+      - "traefik.http.routers.to-sonarr.tls.certresolver=ovh"
+      - "traefik.http.routers.to-sonarr.middlewares=securedheaders@file"
+      - "traefik.http.services.sonarr.loadbalancer.passhostheader=true"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+    environment:
+      - PGID=${GID_MEDIA}
+      - PUID=${UID_MEDIA}
+      - TZ=${TIMEZONE}
+    networks:
+      - sonarr
+    volumes:
+      - "./appdata/sonarr:/config"
+      - "${VOLUME_MEDIA_TV_SHOWS}:/tv"
+
+  tautulli:
+    image: linuxserver/tautulli:latest
+    container_name: tautulli
+    restart: unless-stopped
+    depends_on:
+      - plex
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=plex"
+      - "traefik.http.routers.to-tautulli.rule=Host(`tautulli.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.to-tautulli.entrypoints=websecure"
+      - "traefik.http.routers.to-tautulli.tls=true"
+      - "traefik.http.routers.to-tautulli.tls.certresolver=ovh"
+      - "traefik.http.routers.to-tautulli.middlewares=securedheaders@file"
+      - "traefik.http.services.tautulli.loadbalancer.passhostheader=true"
+      - "traefik.http.services.tautulli.loadbalancer.server.port=8181"
+    environment:
+      - PUID=${UID_DOCKER}
+      - PGID=${GID_DOCKER}
+      - TZ=${TIMEZONE}
+    networks:
+      - plex
+    volumes:
+      - "./appdata/tautulli:/config"
+      - "./appdata/plex/Library/Application Support/Plex Media Server/Logs:/logs:ro"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    command:
+      --cleanup
+      --interval ${WATCHTOWER_INTERVAL}
+      --notifications ${WATCHTOWER_NOTIFICATIONS}
+      --notification-url ${WATCHTOWER_NOTIFICATION_URL}
+    environment:
+      - TZ=${TIMEZONE}
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
