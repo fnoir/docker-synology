@@ -190,6 +190,7 @@ services:
       - TZ=${TIMEZONE}
     networks:
       - radarr
+      - rtorrent
     volumes:
       - "./appdata/radarr:/config"
       - "${VOLUME_MEDIA_MOVIES}:/movies"
@@ -262,6 +263,7 @@ services:
       - PUID=${UID_MEDIA}
       - TZ=${TIMEZONE}
     networks:
+      - rtorrent
       - sonarr
     volumes:
       - "./appdata/sonarr:/config"
